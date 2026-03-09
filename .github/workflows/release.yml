@@ -4,60 +4,38 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
-  build-and-release:
-    runs-on: macos-latest
-    permissions:
-      contents: write
+  build:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate tag matches VERSION file
-        run: |
-          FILE_VERSION="v$(cat VERSION)"
-          TAG_VERSION="${GITHUB_REF_NAME}"
-          if [ "$FILE_VERSION" != "$TAG_VERSION" ]; then
-            echo "Error: VERSION file ($FILE_VERSION) does not match tag ($TAG_VERSION)" >&2
-            exit 1
-          fi
-
-      - name: Install Rust wasm32-wasip1 target
-        run: rustup target add wasm32-wasip1
-
-      - name: Stamp and build WASM plugin
-        run: |
-          VERSION=$(cat "$GITHUB_WORKSPACE/VERSION")
-          sed -i.bak "s/version = \"0.0.0-dev\"/version = \"$VERSION\"/" Cargo.toml
-          grep -q "version = \"$VERSION\"" Cargo.toml || { echo "Failed to stamp Cargo.toml"; exit 1; }
-          cargo build --release
-        working-directory: plugin
-
-      - name: Stage release artifacts
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          mkdir -p release-staging
-          sed "s/__COMMIT_SHA__/$VERSION/" zelligent.sh > release-staging/zelligent.sh
-          chmod +x release-staging/zelligent.sh
-          cp plugin/target/wasm32-wasip1/release/zelligent-plugin.wasm release-staging/
-          cp README.md release-staging/
-          tar -czf "zelligent-${VERSION}.tar.gz" -C release-staging .
-          SHA256=$(shasum -a 256 "zelligent-${VERSION}.tar.gz" | awk '{print $1}')
-          echo "SHA256=$SHA256" >> "$GITHUB_ENV"
-          echo "TARBALL=zelligent-${VERSION}.tar.gz" >> "$GITHUB_ENV"
-          echo "SHA256 for Homebrew formula: $SHA256"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
         with:
-          files: ${{ env.TARBALL }}
-          generate_release_notes: true
-          body: |
-            SHA256: `${{ env.SHA256 }}`
+          targets: wasm32-wasip1
 
-            ## Install
+      - name: Build plugin
+        run: |
+          cd plugin
+          cargo build --release --target wasm32-wasip1
 
-            ```
-            brew install pcomans/zelligent/zelligent
-            zelligent doctor
-            ```
+      - name: Package release
+        run: |
+          VERSION=$(cat VERSION)
+          mkdir -p zelligent-${VERSION}
+          cp zelligent.sh zelligent-${VERSION}/zelligent
+          cp plugin/target/wasm32-wasip1/release/zelligent-plugin.wasm zelligent-${VERSION}/
+          cp -r claude-plugin zelligent-${VERSION}/
+          cp README.md LICENSE zelligent-${VERSION}/
+          tar -czf zelligent-${VERSION}-linux-x86_64.tar.gz zelligent-${VERSION}/
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: zelligent-*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
